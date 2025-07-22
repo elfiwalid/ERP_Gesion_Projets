@@ -65,12 +65,15 @@ class AuthController extends Controller
 
     // ✅ Voir l’utilisateur connecté
     public function me(Request $request)
-    {
-        return response()->json([
-            'message' => 'User profile retrieved successfully.',
-            'user'    => $request->user(),
-        ], 200);
-    }
+{
+    $user = $request->user()->load('role'); // Charge la relation role
+
+    return response()->json([
+        'message' => 'User profile retrieved successfully.',
+        'user' => $user,
+    ]);
+}
+
 
     // ✅ Se déconnecter
     public function logout(Request $request)
