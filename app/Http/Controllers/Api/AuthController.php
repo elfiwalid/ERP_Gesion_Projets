@@ -27,11 +27,14 @@ class AuthController extends Controller
             'role_id'  => $validated['role_id'],
         ]);
 
+        $user->load('role'); // Charger le nom du rôle
+
         $token = $user->createToken('api-token')->plainTextToken;
 
         return response()->json([
             'message'      => 'User registered successfully.',
             'user'         => $user,
+            'role'         => $user->role->name ?? null, // 👈 Rôle (nom)
             'access_token' => $token,
             'token_type'   => 'Bearer',
         ], 201);
@@ -45,7 +48,7 @@ class AuthController extends Controller
             'password' => 'required|string',
         ]);
 
-        $user = User::where('email', $credentials['email'])->first();
+        $user = User::with('role')->where('email', $credentials['email'])->first();
 
         if (!$user || !Hash::check($credentials['password'], $user->password)) {
             return response()->json([
@@ -58,6 +61,7 @@ class AuthController extends Controller
         return response()->json([
             'message'      => 'Login successful.',
             'user'         => $user,
+            'role_id' => $user->role_id, // 👈 important
             'access_token' => $token,
             'token_type'   => 'Bearer',
         ], 200);
@@ -65,15 +69,15 @@ class AuthController extends Controller
 
     // ✅ Voir l’utilisateur connecté
     public function me(Request $request)
-{
-    $user = $request->user()->load('role'); // Charge la relation role
+    {
+        $user = $request->user()->load('role'); // Charge la relation role
 
-    return response()->json([
-        'message' => 'User profile retrieved successfully.',
-        'user' => $user,
-    ]);
-}
-
+        return response()->json([
+            'message' => 'User profile retrieved successfully.',
+            'user'    => $user,
+            'role'    => $user->role->name ?? null,
+        ]);
+    }
 
     // ✅ Se déconnecter
     public function logout(Request $request)

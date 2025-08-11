@@ -54,6 +54,7 @@ class UserController extends Controller
         return response()->json($user, 201);
     }
 
+
     public function listChefs()
     {
         $chefs = User::whereHas('role', function($q) {
@@ -94,4 +95,10 @@ class UserController extends Controller
 
         return response()->json(null, 204);
     }
+
+    public function getRoles()
+{
+    return Role::all();
+}
+
 }
