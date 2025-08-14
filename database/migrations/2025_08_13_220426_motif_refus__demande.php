@@ -1,0 +1,21 @@
+<?php
+// database/migrations/xxxx_xx_xx_xxxxxx_add_motif_refus_to_demande_documents_table.php
+
+use Illuminate\Database\Migrations\Migration;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Schema;
+
+return new class extends Migration {
+    public function up(): void
+    {
+        Schema::table('demande_documents', function (Blueprint $t) {
+            $t->text('motif_refus')->nullable()->after('statut');
+        });
+    }
+    public function down(): void
+    {
+        Schema::table('demande_documents', function (Blueprint $t) {
+            $t->dropColumn('motif_refus');
+        });
+    }
+};
