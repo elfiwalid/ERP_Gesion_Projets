@@ -29,4 +29,15 @@ class Projet extends Model
     public function demande() { return $this->belongsTo(Demande::class); }
     public function createur(){ return $this->belongsTo(User::class, 'cree_par'); }
     public function pieces()  { return $this->hasMany(Piece::class); }
+    public function approvals()
+{
+    return $this->hasMany(\App\Models\ProjectApproval::class, 'projet_id');
+}
+
+public function finance(): HasOne
+{
+    return $this->hasOne(ProjectFinance::class, 'projet_id');
+}
+
+
 }

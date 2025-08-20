@@ -56,6 +56,15 @@ Route::middleware(['auth:sanctum'])->group(function () {
      // Pièces par projet
     Route::get('/projets/{projet}/pieces',  [PieceController::class, 'indexByProject']);
     Route::post('/projets/{projet}/pieces', [PieceController::class, 'storeForProject']);
+
+
+    // Approbations
+    Route::get('/projets/{projet}/approvals',  [ProjetController::class, 'approvals']);
+    Route::post('/projets/{projet}/approve',   [ProjetController::class, 'decide']);
+
+    // (optionnel) changement manuel de statut
+    Route::patch('/projets/{projet}/statut',   [ProjetController::class, 'updateStatut']);
+    
     // Pièces (unitaires)
     Route::get('/pieces/{piece}',           [PieceController::class, 'show']);
     Route::patch('/pieces/{piece}/assign',  [PieceController::class, 'assign']);   // AdminG
@@ -64,6 +73,18 @@ Route::middleware(['auth:sanctum'])->group(function () {
     Route::post('/pieces/{piece}/refuser',  [PieceController::class, 'refuser']);  // AdminG
     Route::get('/pieces/{piece}/download',  [PieceController::class, 'download']); // AdminG ou Assigné
     Route::delete('/pieces/{piece}',        [PieceController::class, 'destroy']);  // AdminG (optionnel)
+
+    // Finance
+    Route::get('/projets/{projet}/finance', [ProjetController::class, 'financeShow']);
+    Route::post('/projets/{projet}/finance/estimation/upload', [ProjetController::class, 'financeUploadEstimation']);
+    Route::post('/projets/{projet}/finance/estimation/valider-chef', [ProjetController::class, 'financeChefApprove']);
+    Route::post('/projets/{projet}/finance/estimation/valider-admin', [ProjetController::class, 'financeAdminApprove']);
+    Route::post('/projets/{projet}/finance/estimation/refuser', [ProjetController::class, 'financeRefuse']);
+    Route::post('/projets/{projet}/finance/envoyer', [ProjetController::class, 'financeSendRA']);
+
+    //Télecharger Proposition au client 
+     Route::get('/projets/{projet}/sendables', [ProjetController::class, 'sendables']); // liste des fichiers éligibles
+    Route::post('/projets/{projet}/send',      [ProjetController::class, 'downloadPackage']); // génère le ZIP et renvoie l’URL
 
     // Admin + Responsable Admin → gestion utilisateurs
     Route::middleware('check.admin')->group(function () {
