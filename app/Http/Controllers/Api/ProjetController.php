@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\Client;
 use App\Models\Demande;
+use App\Models\Depot;
 use App\Models\Piece;
 use App\Models\Projet;
 use App\Models\ProjectApproval;
@@ -509,7 +510,6 @@ class ProjetController extends Controller
     public function sendables(Request $r, Projet $projet)
 {
     $u = $r->user();
-    // Qui peut préparer la proposition ? RA (2) et AdminG (1)
     if (!in_array((int)$u->role_id, [self::ADMIN_G, self::RESP_ADMIN], true)) {
         return response()->json(['message'=>'Non autorisé.'], 403);
     }
@@ -523,20 +523,27 @@ class ProjetController extends Controller
         ->whereNotNull('fichier_path')
         ->get(['id','nom','fichier_path']);
 
-    // Offre technique = pièce nommée "Offre technique" (insensible à la casse)
+    // Offre technique
     $tech = $pieces->first(function ($p) {
         return mb_strtolower(trim($p->nom)) === mb_strtolower('Offre technique');
     });
 
-    // Estimation budget (project_finances)
-    $finance = ProjectFinance::firstOrCreate(
-        ['projet_id' => $projet->id],
-        ['estimation_statut' => 'NONE']
-    );
+    // Finance
+    $finance = ProjectFinance::firstOrCreate(['projet_id' => $projet->id], ['estimation_statut' => 'NONE']);
     $financeReady = ($finance->estimation_statut === 'APPROVED') && !empty($finance->estimation_file_path);
 
-    // Autres pièces validées
+    // Autres pièces
     $others = $pieces->filter(fn($p) => !$tech || $p->id !== $tech->id)->values()->all();
+
+    // ✅ Dépôt (justificatif logistique du DERNIER dépôt physique)
+    $lastDepot  = Depot::where('projet_id', $projet->id)->latest('id')->first();
+    $depotFile  = null;
+    if ($lastDepot && $lastDepot->mode === 'PHYSIQUE' && !empty($lastDepot->physique_file_path)) {
+        $depotFile = [
+            'path'     => $lastDepot->physique_file_path,
+            'filename' => $lastDepot->physique_file_name ?: basename($lastDepot->physique_file_path),
+        ];
+    }
 
     return response()->json([
         'tech'    => $tech ? ['id'=>$tech->id, 'nom'=>$tech->nom] : null,
@@ -545,7 +552,8 @@ class ProjetController extends Controller
             'filename' => basename($finance->estimation_file_path),
         ] : null,
         'pieces'  => array_map(fn($p)=>['id'=>$p->id,'nom'=>$p->nom], $others),
-        'ready'   => (bool)($tech && $financeReady), // indicatif
+        'depot'   => $depotFile,                   // 👈 on renvoie la variable définie ci-dessus
+        'ready'   => (bool)($tech && $financeReady),
     ]);
 }
 
@@ -563,11 +571,12 @@ public function downloadPackage(Request $r, Projet $projet)
     $data = $r->validate([
         'include_tech'    => ['required','boolean'],
         'include_finance' => ['required','boolean'],
+        'include_depot'   => ['sometimes','boolean'],   // 👈 ajouté
         'piece_ids'       => ['array'],
         'piece_ids.*'     => ['integer','exists:pieces,id'],
     ]);
 
-    // Récup des sources
+    // Récup sources
     $pieces = $projet->pieces()
         ->where('statut','VALIDE')
         ->whereNotNull('fichier_path')
@@ -575,10 +584,7 @@ public function downloadPackage(Request $r, Projet $projet)
 
     $tech = $pieces->first(fn($p) => mb_strtolower(trim($p->nom)) === mb_strtolower('Offre technique'));
 
-    $finance = ProjectFinance::firstOrCreate(
-        ['projet_id' => $projet->id],
-        ['estimation_statut' => 'NONE']
-    );
+    $finance = ProjectFinance::firstOrCreate(['projet_id' => $projet->id], ['estimation_statut' => 'NONE']);
     $financeReady = ($finance->estimation_statut === 'APPROVED') && !empty($finance->estimation_file_path);
 
     if ($data['include_tech'] && !$tech) {
@@ -588,76 +594,75 @@ public function downloadPackage(Request $r, Projet $projet)
         return response()->json(['message'=>"Estimation budget non approuvée."], 422);
     }
 
-    // Fichiers à zipper
     $files = [];
 
-// Offre technique
-if ($data['include_tech'] && $tech) {
-    $files[] = [
-        'disk' => $this->pickDiskFor($tech->fichier_path),          // ✅
-        'path' => $tech->fichier_path,
-        'name' => '01_Offre_technique_'.basename($tech->fichier_path),
-    ];
-}
+    if ($data['include_tech'] && $tech) {
+        $files[] = [
+            'disk' => $this->pickDiskFor($tech->fichier_path),
+            'path' => $tech->fichier_path,
+            'name' => '01_Offre_technique_'.basename($tech->fichier_path),
+        ];
+    }
 
-// Estimation
-if ($data['include_finance'] && $financeReady) {
-    $files[] = [
-        'disk' => $this->pickDiskFor($finance->estimation_file_path),// ✅
-        'path' => $finance->estimation_file_path,
-        'name' => '02_Estimation_budget_'.basename($finance->estimation_file_path),
-    ];
-}
+    if ($data['include_finance'] && $financeReady) {
+        $files[] = [
+            'disk' => $this->pickDiskFor($finance->estimation_file_path),
+            'path' => $finance->estimation_file_path,
+            'name' => '02_Estimation_budget_'.basename($finance->estimation_file_path),
+        ];
+    }
 
-// Autres pièces sélectionnées
-$selected = collect($data['piece_ids'] ?? [])->map(fn($v)=>(int)$v)->all();
-foreach ($pieces as $p) {
-    if ($tech && $p->id === $tech->id) continue;
-    if (!in_array($p->id, $selected, true)) continue;
+    // Autres pièces cochées
+    $selected = collect($data['piece_ids'] ?? [])->map(fn($v)=>(int)$v)->all();
+    foreach ($pieces as $p) {
+        if ($tech && $p->id === $tech->id) continue;
+        if (!in_array($p->id, $selected, true)) continue;
+        $files[] = [
+            'disk' => $this->pickDiskFor($p->fichier_path),
+            'path' => $p->fichier_path,
+            'name' => 'piece_'.$p->id.'_'.str_replace(' ','_',$p->nom).'_'.basename($p->fichier_path),
+        ];
+    }
 
-    $files[] = [
-        'disk' => $this->pickDiskFor($p->fichier_path),              // ✅
-        'path' => $p->fichier_path,
-        'name' => 'piece_'.$p->id.'_'.str_replace(' ','_',$p->nom).'_'.basename($p->fichier_path),
-    ];
-}
+    // ✅ Fichier logistique du dernier dépôt physique, si demandé
+    if (!empty($data['include_depot'])) {
+        $lastDepot = Depot::where('projet_id', $projet->id)->latest('id')->first();
+        if ($lastDepot && $lastDepot->mode === 'PHYSIQUE' && !empty($lastDepot->physique_file_path)) {
+            $files[] = [
+                'disk' => $this->pickDiskFor($lastDepot->physique_file_path),
+                'path' => $lastDepot->physique_file_path,
+                'name' => '03_Budget_logistique_'.basename($lastDepot->physique_file_path),
+            ];
+        }
+    }
 
     if (empty($files)) {
         return response()->json(['message'=>"Aucun fichier à inclure."], 422);
     }
 
-    // Création ZIP sur disque public
+    // Création ZIP (identique à ta version)
     $disk = 'public';
     $dir  = 'proposals/'.$projet->id;
     $name = 'projet_'.$projet->id.'_proposal_'.now()->format('Ymd_His').'.zip';
     $zipRelativePath = $dir.'/'.$name;
 
-    Storage::disk($disk)->makeDirectory($dir);
-    $zipFullPath = Storage::disk($disk)->path($zipRelativePath);
+    \Storage::disk($disk)->makeDirectory($dir);
+    $zipFullPath = \Storage::disk($disk)->path($zipRelativePath);
 
-    $zip = new ZipArchive();
-    if (true !== $zip->open($zipFullPath, ZipArchive::CREATE)) {
+    $zip = new \ZipArchive();
+    if (true !== $zip->open($zipFullPath, \ZipArchive::CREATE)) {
         return response()->json(['message'=>'Impossible de créer le ZIP.'], 500);
     }
     foreach ($files as $f) {
-        $src = Storage::disk($f['disk'])->path($f['path']);
-        if (is_file($src)) {
-            $zip->addFile($src, $f['name']);
-        }
+        $src = \Storage::disk($f['disk'])->path($f['path']);
+        if (is_file($src)) $zip->addFile($src, $f['name']);
     }
     $zip->close();
 
-    // URL publique
-    $url = Storage::disk($disk)->url($zipRelativePath);
-
-    // (optionnel) mémoriser le dernier zip
+    $url = \Storage::disk($disk)->url($zipRelativePath);
     $projet->update(['proposal_last_zip_path' => $zipRelativePath]);
 
-    return response()->json([
-        'status' => 'ready',
-        'url'    => $url,
-        'zip'    => $zipRelativePath,
-    ]);
+    return response()->json(['status'=>'ready','url'=>$url,'zip'=>$zipRelativePath]);
 }
 
 private function pickDiskFor(string $relativePath): string

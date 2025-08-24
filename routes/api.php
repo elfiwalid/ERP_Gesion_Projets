@@ -8,6 +8,9 @@ use App\Http\Controllers\Api\DemandeDocumentController;
 use App\Http\Controllers\Api\ClientController;
 use App\Http\Controllers\Api\ProjetController;
 use App\Http\Controllers\Api\PieceController;
+use App\Http\Controllers\Api\DepositController;
+use App\Http\Controllers\Api\SoutenanceController;
+
 
 
 
@@ -85,6 +88,31 @@ Route::middleware(['auth:sanctum'])->group(function () {
     //Télecharger Proposition au client 
      Route::get('/projets/{projet}/sendables', [ProjetController::class, 'sendables']); // liste des fichiers éligibles
     Route::post('/projets/{projet}/send',      [ProjetController::class, 'downloadPackage']); // génère le ZIP et renvoie l’URL
+
+// Liste projets éligibles au dépôt
+    Route::get('/deposits/eligible', [DepositController::class, 'eligible']);
+
+    // Création dépôt (2 alias pour coller à ton UI)
+    Route::post('/projets/{projet}/deposits', [DepositController::class, 'store']);
+    Route::post('/deposits', [DepositController::class, 'store']); // avec {projet_id} dans le body
+
+    // Dernier dépôt d’un projet (pour ouvrir le bandeau si déjà existant)
+    Route::get('/projets/{projet}/last-deposit', [DepositController::class, 'lastForProject']);
+
+    // Détail d’un dépôt (bandeau)
+    Route::get('/deposits/{deposit}', [DepositController::class, 'show']);
+    Route::put ('/depots/{deposit}/physique-path',   [DepositController::class, 'setPhysicalPath']);   // Option A: juste un path texte
+    Route::post('/depots/{deposit}/physique-upload', [DepositController::class, 'uploadPhysical']);    // Option B: upload réel
+
+    Route::get ('/depots/{deposit}/soutenance',     [SoutenanceController::class, 'showByDepot']);
+  Route::post('/depots/{deposit}/soutenance',     [SoutenanceController::class, 'upsertForDepot']);
+
+  Route::post('/soutenances/{soutenance}/envoyer-invitations', [SoutenanceController::class, 'sendInvites']);
+  Route::post('/soutenances/{soutenance}/tenue',               [SoutenanceController::class, 'markDone']);
+
+  Route::post('/soutenances/{soutenance}/feedback',            [SoutenanceController::class, 'storeFeedback']);
+  Route::get ('/soutenances/{soutenance}/feedback',            [SoutenanceController::class, 'listFeedback']);
+
 
     // Admin + Responsable Admin → gestion utilisateurs
     Route::middleware('check.admin')->group(function () {
