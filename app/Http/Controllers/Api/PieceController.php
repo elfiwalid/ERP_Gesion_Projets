@@ -233,4 +233,50 @@ class PieceController extends Controller
         $piece->delete();
         return response()->json(['message' => 'Pièce supprimée.']);
     }
+
+    public function assignBulk(\Illuminate\Http\Request $r)
+{
+    $user = $r->user();
+    if ((int)$user->role_id !== 1) { // 1 = Admin Général
+        abort(403, 'Seul l’Admin Général peut assigner en lot.');
+    }
+
+    $data = $r->validate([
+        'piece_ids'        => ['required','array','min:1'],
+        'piece_ids.*'      => ['integer','exists:pieces,id'],
+        'assigned_user_id' => ['required','integer','exists:users,id'],
+        'due_date'         => ['nullable','date'],
+    ]);
+
+    // Récupérer toutes les pièces (avec leurs projets)
+    $pieces = \App\Models\Piece::with('projet')->whereIn('id', $data['piece_ids'])->get();
+
+    // Filtrer: on ne traite que les pièces dont le projet est EN_COURS (même verrou que le front)
+    $eligible = $pieces->filter(function($p){
+        return optional($p->projet)->statut === 'EN_COURS';
+    });
+
+    if ($eligible->isEmpty()) {
+        return response()->json(['message' => 'Aucune pièce éligible.'], 422);
+    }
+
+    // Mise à jour
+    foreach ($eligible as $p) {
+        $p->assigned_user_id = $data['assigned_user_id'];
+        $p->due_date         = $data['due_date'] ?? null;
+        // Optionnel: remettre EN_COURS si la pièce était A_IMPORTER
+        if ($p->statut === 'A_IMPORTER') {
+            $p->statut = 'EN_COURS';
+        }
+        $p->save();
+    }
+
+    // Retourner les pièces mises à jour (id + champs utiles)
+    $updated = \App\Models\Piece::with(['assignee:id,name', 'projet:id,statut'])
+        ->whereIn('id', $eligible->pluck('id'))
+        ->get();
+
+    return response()->json($updated);
+}
+
 }

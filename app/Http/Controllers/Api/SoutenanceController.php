@@ -80,6 +80,73 @@ class SoutenanceController extends Controller
         return $this->showByDepot($deposit, $r);
     }
 
+    public function events(Request $r)
+{
+    $u     = $r->user();
+    $start = \Carbon\Carbon::parse($r->query('start', now()->startOfMonth()))->startOfDay();
+    $end   = \Carbon\Carbon::parse($r->query('end',   now()->endOfMonth()))->endOfDay();
+
+    $q = \App\Models\Soutenance::query()
+        ->whereBetween('date_time', [$start, $end])
+        ->with(['depot:id,projet_id', 'depot.projet:id,nom']);
+
+    $rows = $q->get();
+
+    // Visibilité : AdminG (1) / RA (2) -> tout ; sinon seulement si invité
+    $isAdminOrRA = in_array((int) $u->role_id, [1, 2], true);
+    if (!$isAdminOrRA) {
+        $rows = $rows->filter(function ($s) use ($u) {
+            $inv = collect($s->invites ?: []);
+            return $inv->pluck('user_id')->contains((int) $u->id);
+        });
+    }
+
+    $events = $rows->map(function ($s) {
+        $projet   = optional(optional($s->depot)->projet);
+        $statut   = mb_strtoupper($s->statut ?: 'BROUILLON');
+
+        // PHP 7: remplacer match() par switch
+        $calendar = 'Primary';
+        switch ($statut) {
+            case 'TENUE':
+                $calendar = 'Success';
+                break;
+            case 'PLANIFIÉE':
+            case 'EN COURS':
+                $calendar = 'Warning';
+                break;
+            case 'ANNULÉE':
+                $calendar = 'Danger';
+                break;
+        }
+
+        // Pas de ?-> (PHP 8). Utilise optional()
+        $startIso = optional($s->date_time)->toIso8601String();
+        $endDt    = $s->date_time ? (clone $s->date_time)->addMinutes(90) : null;
+        $endIso   = $endDt ? $endDt->toIso8601String() : null;
+
+        return [
+            'id'     => 'sout-' . $s->id,
+            'title'  => 'Soutenance — ' . ($projet ? ($projet->nom ?: ('Projet #' . (optional($s->depot)->projet_id ?: '?'))) : 'Projet ?'),
+            'start'  => $startIso,
+            'end'    => $endIso,
+            'allDay' => false,
+            'extendedProps' => [
+                'calendar'      => $calendar,         // Danger / Success / Primary / Warning
+                'soutenance_id' => $s->id,
+                'projet_id'     => optional($s->depot)->projet_id,
+                'statut'        => $s->statut,
+                'lieu'          => $s->lieu,
+                'meeting_url'   => $s->meeting_url,
+            ],
+        ];
+    })->values();
+
+    return response()->json($events);
+}
+
+
+
     /** POST /soutenances/{soutenance}/envoyer-invitations */
     public function sendInvites(Soutenance $soutenance, Request $r)
     {

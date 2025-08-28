@@ -2,184 +2,185 @@
 
 namespace App\Http\Controllers\Api;
 
-use App\Http\Controllers\Controller; // <-- ajout important
+use App\Http\Controllers\Controller;
 use App\Models\Demande;
 use App\Models\DemandeDocument;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Str; // ✅ Import ajouté
 
 class DemandeDocumentController extends Controller
 {
-    // ⚠️ ajuste ces IDs à TA table `roles`
-    private const ROLE_ADMIN_GENERAL             = 1; // Admin Général
-    private const ROLE_RESPONSABLE_ADMINISTRATIF = 2; // Responsable Administratif (RA)
-    private const ROLE_CTS                       = 3; // Chef de Terrain Supérieur
-    private const ROLE_CT                        = 4; // Chef de Terrain
-    private const ROLE_CES                       = 5; // Chargé d'Études Supérieur
-
     /**
      * Ajouter un document à une demande existante.
-     * Règle: si la demande est BRIEF, le doc ajouté doit être un brief.
+     * - Plus AUCUNE contrainte de type (BRIEF / APPEL_OFFRE).
+     * - Si un fichier est fourni dans la même requête, le document est créé directement VALIDÉ.
+     *
+     * FormData possible :
+     *  - nom (string)
+     *  - is_brief (bool, optionnel)
+     *  - fichier (file, optionnel)
      */
     public function store(Request $r, int $demandeId)
     {
         $data = $r->validate([
             'nom'      => ['required','string','max:255'],
             'is_brief' => ['nullable','boolean'],
+            'fichier'  => ['sometimes','file','max:20480'], // 20MB
         ]);
 
         $demande = Demande::findOrFail($demandeId);
 
-        // Comparaison en string (pas d'enum)
-        if ($demande->type === 'BRIEF' && !($data['is_brief'] ?? false)) {
-            return response()->json(['message' => 'Pour une demande BRIEF, le document doit être un brief.'], 422);
+        $path = null;
+        $uploadedBy = null;
+        $statut = 'EN_COURS';
+
+        if ($r->hasFile('fichier')) {
+            $path = $r->file('fichier')->store("demandes/{$demande->id}/documents", 'public');
+            $uploadedBy = auth()->id();
+            $statut = 'VALIDE'; // ✅ auto-validation si fichier fourni
         }
 
         $doc = DemandeDocument::create([
-            'demande_id' => $demande->id,
-            'nom'        => $data['nom'],
-            'is_brief'   => (bool)($data['is_brief'] ?? false),
+            'demande_id'   => $demande->id,
+            'nom'          => $data['nom'],
+            'is_brief'     => (bool)($data['is_brief'] ?? false),
+            'fichier_path' => $path,
+            'uploaded_by'  => $uploadedBy,
+            'statut'       => $statut,
+            'motif_refus'  => null,
         ]);
 
-        return response()->json($doc, 201);
+        // recalcul de statut demande
+        $this->recalcDemandeStatut($demande->id);
+
+        return response()->json($doc->fresh(), 201);
     }
 
     /**
-     * Upload du fichier (disk "public")
-     * - brief => CES ou Admin Général
-     * - non-brief => RA ou Admin Général
+     * Upload (ou ré-upload) d'un fichier pour un document.
+     * - Aucune restriction de rôle.
+     * - Le document passe automatiquement à VALIDE.
      */
     public function upload(Request $r, int $documentId)
-{
-    $r->validate(['fichier' => ['required','file','max:20480']]); // 20MB
-    $doc = DemandeDocument::with('demande')->findOrFail($documentId);
+    {
+        $r->validate(['fichier' => ['required','file','max:20480']]); // 20MB
 
-    $roleId = auth()->user()->role_id;
+        $doc = DemandeDocument::with('demande')->findOrFail($documentId);
 
-    if ($doc->is_brief) {
-        // ✅ NOUVELLE RÈGLE: RA peut téléverser un BRIEF (mais ne peut pas le valider/refuser)
-        if (!in_array($roleId, [
-            self::ROLE_CES,
-            self::ROLE_ADMIN_GENERAL,
-            self::ROLE_RESPONSABLE_ADMINISTRATIF, // <-- ajouté
-        ], true)) {
-            abort(403, 'Seuls CES, RA ou Admin Général peuvent téléverser un brief.');
-        }
-    } else {
-        // Non-brief : inchangé (RA ou AdminG)
-        if (!in_array($roleId, [self::ROLE_RESPONSABLE_ADMINISTRATIF, self::ROLE_ADMIN_GENERAL], true)) {
-            abort(403, 'Seul le Responsable Administratif ou Admin Général peut téléverser ce document.');
-        }
+        $path = $r->file('fichier')->store("demandes/{$doc->demande_id}/documents", 'public');
+
+        $doc->update([
+            'fichier_path' => $path,
+            'statut'       => 'VALIDE',     // ✅ auto-validation
+            'uploaded_by'  => auth()->id(),
+            'motif_refus'  => null,
+        ]);
+
+        $this->recalcDemandeStatut($doc->demande_id);
+
+        return response()->json($doc->fresh());
     }
 
-    $path = $r->file('fichier')->store("demandes/{$doc->demande_id}/documents", 'public');
-
-    $doc->update([
-    'fichier_path' => $path,
-    'statut'       => 'EN_COURS',
-    'uploaded_by'  => auth()->id(),
-]);
-
-$this->recalcDemandeStatut($doc->demande_id); // 👈 ajouter ceci
-
-return response()->json($doc->fresh());
-
-}
-
- 
-
-
     /**
-     * Mes tâches selon mon rôle
+     * Mes tâches : plus de workflow d'approbation => liste vide.
      */
     public function mesTaches()
     {
-        $roleId = auth()->user()->role_id;
+        return response()->json([]);
+    }
 
-        $q = DemandeDocument::query()->with('demande.client');
+    /**
+     * (DÉSACTIVÉ) Valider un document — workflow supprimé.
+     */
+    public function valider(int $documentId)
+    {
+        return response()->json(['message' => 'Workflow de validation désactivé.'], 405);
+    }
 
-        if ($roleId === self::ROLE_CES) {
-            $q->where('is_brief', true)->where('statut','!=','VALIDE');
-        } elseif ($roleId === self::ROLE_RESPONSABLE_ADMINISTRATIF) {
-            $q->where(function($qq){ $qq->whereNull('is_brief')->orWhere('is_brief', false); })
-              ->where('statut','!=','VALIDE');
-        } elseif ($roleId === self::ROLE_ADMIN_GENERAL) {
-            // admin voit tout
-        } else {
-            abort(403, 'Aucune tâche pour ce rôle.');
+    /**
+     * (DÉSACTIVÉ) Refuser un document — workflow supprimé.
+     */
+    public function refuser(Request $r, int $documentId)
+    {
+        return response()->json(['message' => 'Workflow de validation désactivé.'], 405);
+    }
+
+    /**
+     * Recalcule le statut de la demande :
+     * - TERMINEE si tous les docs sont VALIDE
+     * - BROUILLON si tous REFUSE (cas théorique si tu réactives refuser)
+     * - EN_COURS sinon
+     */
+    private function recalcDemandeStatut(int $demandeId): void
+    {
+        $d = Demande::withCount([
+            'documents as total_docs',
+            'documents as valides_count' => function ($q) { $q->where('statut', 'VALIDE'); },
+            'documents as refuses_count' => function ($q) { $q->where('statut', 'REFUSE'); },
+        ])->find($demandeId);
+
+        if (!$d || $d->total_docs === 0) return;
+
+        $new = 'EN_COURS';
+        if ($d->valides_count === $d->total_docs) {
+            $new = 'TERMINEE';
+        } elseif ($d->refuses_count === $d->total_docs) {
+            $new = 'BROUILLON';
         }
 
-        return response()->json($q->orderByDesc('id')->get());
+        if ($d->statut !== $new) {
+            $d->statut = $new;
+            $d->save();
+        }
     }
 
-    // Valider le document (brief => CES/AdminG ; non-brief => RA/AdminG)
-public function valider(int $documentId)
-{
-    $doc = DemandeDocument::with('demande')->findOrFail($documentId);
-    $roleId = auth()->user()->role_id;
+    /** Télécharger le fichier d'un document de demande (stream sécurisé) */
+    public function download(int $documentId)
+    {
+        $doc = DemandeDocument::findOrFail($documentId);
 
-    if ($doc->is_brief) {
-        if (!in_array($roleId, [self::ROLE_CES, self::ROLE_ADMIN_GENERAL], true)) abort(403);
-    } else {
-        if (!in_array($roleId, [self::ROLE_RESPONSABLE_ADMINISTRATIF, self::ROLE_ADMIN_GENERAL], true)) abort(403);
+        if (empty($doc->fichier_path)) {
+            return response()->json(['message' => 'Aucun fichier pour ce document.'], 404);
+        }
+
+        $disk = $this->pickDiskFor($doc->fichier_path);
+        if (!Storage::disk($disk)->exists($doc->fichier_path)) {
+            return response()->json(['message' => 'Fichier introuvable sur le disque.'], 404);
+        }
+
+        // Nom de fichier lisible
+        $ext      = pathinfo($doc->fichier_path, PATHINFO_EXTENSION);
+        $basename = trim((string)$doc->nom) !== '' ? $doc->nom : ('document_'.$doc->id);
+        $safe     = Str::slug($basename, '_'); // ✅ Str maintenant disponible
+        $filename = $safe.($ext ? '.'.$ext : '');
+
+        // Stream de téléchargement avec Content-Disposition
+        return Storage::disk($disk)->download($doc->fichier_path, $filename);
     }
 
-    $doc->update([
-    'statut' => 'VALIDE',
-    'motif_refus' => null,
-]);
+    /** URL publique si le fichier est sur le disk "public" (option pratique pour lien direct) */
+    public function publicUrl(int $documentId)
+    {
+        $doc = DemandeDocument::findOrFail($documentId);
+        if (empty($doc->fichier_path)) {
+            return response()->json(['message' => 'Aucun fichier pour ce document.'], 404);
+        }
 
-$this->recalcDemandeStatut($doc->demande_id); // 👈 ajouter
+        $disk = $this->pickDiskFor($doc->fichier_path);
+        if ($disk !== 'public') {
+            // Pas d'URL publique pour ce disk ; on invite à utiliser /download
+            return response()->json(['message' => 'Pas d\'URL publique disponible pour ce fichier.'], 422);
+        }
 
-return response()->json($doc->fresh());
-}
-
-// Refuser le document (motif requis)
-public function refuser(Request $r, int $documentId)
-{
-    $data = $r->validate(['motif' => ['required','string','max:2000']]);
-
-    $doc = DemandeDocument::with('demande')->findOrFail($documentId);
-    $roleId = auth()->user()->role_id;
-
-    if ($doc->is_brief) {
-        if (!in_array($roleId, [self::ROLE_CES, self::ROLE_ADMIN_GENERAL], true)) abort(403);
-    } else {
-        if (!in_array($roleId, [self::ROLE_RESPONSABLE_ADMINISTRATIF, self::ROLE_ADMIN_GENERAL], true)) abort(403);
+        return response()->json(['url' => Storage::disk('public')->url($doc->fichier_path)]);
     }
 
-    $doc->update([
-    'statut' => 'REFUSE',
-    'motif_refus' => $data['motif'],
-]);
-
-$this->recalcDemandeStatut($doc->demande_id); // 👈 ajouter
-
-return response()->json($doc->fresh());
-}
-
-private function recalcDemandeStatut(int $demandeId): void
-{
-    $d = Demande::withCount([
-        'documents as total_docs',
-        'documents as valides_count' => function ($q) { $q->where('statut', 'VALIDE'); },
-        'documents as refuses_count' => function ($q) { $q->where('statut', 'REFUSE'); },
-    ])->find($demandeId);
-
-    if (!$d || $d->total_docs === 0) return;
-
-    $new = 'EN_COURS';
-    if ($d->valides_count === $d->total_docs) {
-        $new = 'TERMINEE';
-    } elseif ($d->refuses_count === $d->total_docs) {
-        $new = 'BROUILLON';
+    /** Utilitaire pour choisir le bon disk en fonction du chemin stocké */
+    private function pickDiskFor(string $relativePath): string
+    {
+        if (Storage::disk('public')->exists($relativePath)) return 'public';
+        if (Storage::disk('local')->exists($relativePath))  return 'local';
+        return config('filesystems.default', 'local');
     }
-
-    if ($d->statut !== $new) {
-        $d->statut = $new;
-        $d->save();
-    }
-}
-
-
 }

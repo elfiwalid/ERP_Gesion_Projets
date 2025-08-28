@@ -10,7 +10,7 @@ use App\Http\Controllers\Api\ProjetController;
 use App\Http\Controllers\Api\PieceController;
 use App\Http\Controllers\Api\DepositController;
 use App\Http\Controllers\Api\SoutenanceController;
-
+use App\Models\EstimationBudget;
 
 
 
@@ -35,12 +35,26 @@ Route::middleware(['auth:sanctum'])->group(function () {
     Route::post('/demande-documents/{id}/refuser', [DemandeDocumentController::class, 'refuser']);
     Route::get('/demande-documents/mes-taches',     [DemandeDocumentController::class, 'mesTaches']);
     Route::get('/demandes/eligibles', [DemandeController::class, 'eligibles']);
+    // Télécharger un document de demande
+Route::get('/demande-documents/{id}/download', [DemandeDocumentController::class, 'download']);
+// (optionnel) Récupérer une URL publique (si disk "public")
+Route::get('/demande-documents/{id}/public-url', [DemandeDocumentController::class, 'publicUrl']);
 
     // alias pratique: éligibles pour UN client
     Route::get('/clients/{client}/demandes/eligibles', [DemandeController::class, 'eligiblesByClient']);
 
 
-    
+     // Estimation budget
+    Route::get('/projets/{projet}/estimation',           [ProjetController::class, 'estimationShow']);
+    Route::get('/projets/{projet}/estimation/audits',    [ProjetController::class, 'estimationAudits']);
+
+    Route::post('/projets/{projet}/estimation/items',    [ProjetController::class, 'estimationSave']);   // remplace toutes les lignes
+    Route::post('/projets/{projet}/estimation/approve',  [ProjetController::class, 'estimationApprove']); // chef sup / adminG
+    Route::post('/projets/{projet}/estimation/refuse',   [ProjetController::class, 'estimationRefuse']);  // chef sup / adminG (motif)
+
+    Route::get('/projets/{projet}/offre-financiere', [ProjetController::class, 'financeShow']);
+    Route::post('/projets/{projet}/offre-financiere/items', [ProjetController::class, 'saveItems']);
+
 
     // Clients
     Route::get('/clients',        [ClientController::class, 'index']);
@@ -53,7 +67,9 @@ Route::middleware(['auth:sanctum'])->group(function () {
     Route::get('/projets',      [ProjetController::class, 'index']);
     Route::get('/projets/{id}', [ProjetController::class, 'show']);
     Route::post('/projets',     [ProjetController::class, 'store']);
-
+    Route::get('/projets/{projet}/offre-technique/download', [ProjetController::class, 'downloadTechOffer'])
+        ->name('projets.offre-technique.download');
+Route::post('/pieces/assign-bulk', [PieceController::class, 'assignBulk']);
 
     
      // Pièces par projet
@@ -113,6 +129,7 @@ Route::middleware(['auth:sanctum'])->group(function () {
   Route::post('/soutenances/{soutenance}/feedback',            [SoutenanceController::class, 'storeFeedback']);
   Route::get ('/soutenances/{soutenance}/feedback',            [SoutenanceController::class, 'listFeedback']);
 
+  Route::get('/calendar/soutenances', [\App\Http\Controllers\Api\SoutenanceController::class, 'events']);
 
     // Admin + Responsable Admin → gestion utilisateurs
     Route::middleware('check.admin')->group(function () {
